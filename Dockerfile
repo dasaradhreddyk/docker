@@ -1,26 +1,16 @@
-#Stage 1: Define base image that will be used for production
-
-FROM mcr.microsoft.com/dotnet/core/aspnet AS base
+FROM mcr.microsoft.com/dotnet/core/sdk:2.2 AS build-env
 WORKDIR /app
-EXPOSE 80
 
-
-#Stage 2: Build and publish the code
-
-FROM mcr.microsoft.com/dotnet/core/sdk AS build
-WORKDIR /app
-COPY docker.csproj .
+# Copy csproj and restore as distinct layers
+COPY *.csproj ./
 RUN dotnet restore
-COPY . .
-RUN dotnet build -c Release
 
-FROM build AS publish
-RUN dotnet publish -c Release -o /publish
+# Copy everything else and build
+COPY . ./
+RUN dotnet publish -c Release -o out
 
-
-#Stage 3: Build and publish the code
-
-FROM base AS final
+# Build runtime image
+FROM mcr.microsoft.com/dotnet/core/aspnet:2.2
 WORKDIR /app
-COPY --from=publish /publish .
+COPY --from=build-env /app/out .
 ENTRYPOINT ["dotnet", "docker.dll"]
