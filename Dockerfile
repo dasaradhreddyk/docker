@@ -1,11 +1,26 @@
-# Stage 1
-FROM mcr.microsoft.com/dotnet/core/sdk:3.1 AS build
-WORKDIR /build
-COPY . .
-RUN dotnet restore
-RUN dotnet publish -c Release -o /app
-# Stage 2
-FROM mcr.microsoft.com/dotnet/core/aspnet:3.1 AS final
+#Stage 1: Define base image that will be used for production
+
+FROM mcr.microsoft.com/dotnet/core/aspnet AS base
 WORKDIR /app
-COPY --from=build /app .
+EXPOSE 80
+
+
+#Stage 2: Build and publish the code
+
+FROM mcr.microsoft.com/dotnet/core/sdk AS build
+WORKDIR /app
+COPY docker.csproj .
+RUN dotnet restore
+COPY . .
+RUN dotnet build -c Release
+
+FROM build AS publish
+RUN dotnet publish -c Release -o /publish
+
+
+#Stage 3: Build and publish the code
+
+FROM base AS final
+WORKDIR /app
+COPY --from=publish /publish .
 ENTRYPOINT ["dotnet", "docker.dll"]
