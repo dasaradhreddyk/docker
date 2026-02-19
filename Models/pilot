@@ -1,0 +1,197 @@
+using System;
+using System.Collections.Generic;
+using System.Threading.Tasks;
+using Microsoft.Azure.Cosmos;
+using ConsoleApp.Models;
+using System.Linq;
+
+namespace ConsoleApp.Services
+{
+    public class AAMDataMappingService
+    {
+        private readonly CosmosClient _cosmosClient;
+        private readonly Database _database;
+        private readonly Container _container;
+        private readonly string _partitionKeyPath = "/tenantId";
+
+        public AAMDataMappingService(CosmosClient cosmosClient, string databaseId, string containerId)
+        {
+            _cosmosClient = cosmosClient ?? throw new ArgumentNullException(nameof(cosmosClient));
+            _database = cosmosClient.GetDatabase(databaseId);
+            _container = _database.GetContainer(containerId);
+        }
+
+        /// <summary>
+        /// Fetches new data from source and returns staging data model
+        /// </summary>
+        public async Task<List<StagingDataModel>> FetchNewDataAsync(string tenantId)
+        {
+            try
+            {
+                var query = "SELECT * FROM c WHERE c.tenantId = @tenantId AND c.type = 'StagingData'";
+                var queryDef = new QueryDefinition(query).WithParameter("@tenantId", tenantId);
+
+                var iterator = _container.GetItemQueryIterator<StagingDataModel>(queryDef);
+                var stagingData = new List<StagingDataModel>();
+
+                while (iterator.HasMoreResults)
+                {
+                    var response = await iterator.ReadNextAsync();
+                    stagingData.AddRange(response);
+                }
+
+                return stagingData;
+            }
+            catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+            {
+                // Handle 429 - Request Rate Too Large with retry logic
+                await Task.Delay(int.Parse(ex.RetryAfter?.TotalMilliseconds.ToString() ?? "1000"));
+                return await FetchNewDataAsync(tenantId);
+            }
+            catch (Exception ex)
+            {
+                LogDiagnostics($"Error fetching new data: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Transforms staging data to AAM data model
+        /// </summary>
+        public async Task<AAMDataModel> TransformToAAMDataModelAsync(StagingDataModel stagingData, string tenantId)
+        {
+            var aamDataModel = new AAMDataModel
+            {
+                Id = Guid.NewGuid().ToString(),
+                TenantId = tenantId,
+                StagingDataId = stagingData.Id,
+                TransformedData = stagingData.Data,
+                TransformationTimestamp = DateTime.UtcNow,
+                Status = "Transformed"
+            };
+
+            return await UpsertItemAsync(aamDataModel, tenantId);
+        }
+
+        /// <summary>
+        /// Updates AAM database with transformed data
+        /// </summary>
+        public async Task<bool> UpdateAAMDbAsync(AAMDataModel aamDataModel, string tenantId)
+        {
+            try
+            {
+                var response = await _container.UpsertItemAsync(aamDataModel, new PartitionKey(tenantId));
+                LogDiagnostics($"Updated AAM DB: {response.Diagnostics}");
+                return true;
+            }
+            catch (CosmosException ex)
+            {
+                LogDiagnostics($"Error updating AAM DB: {ex.Diagnostics}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Maps staging data to AAM DB model
+        /// </summary>
+        public async Task<List<AAMDataModel>> MapStagingDataToAAMDBModelAsync(List<StagingDataModel> stagingDataList, string tenantId)
+        {
+            var mappedData = new List<AAMDataModel>();
+
+            foreach (var stagingData in stagingDataList)
+            {
+                var aamModel = await TransformToAAMDataModelAsync(stagingData, tenantId);
+                mappedData.Add(aamModel);
+            }
+
+            return mappedData;
+        }
+
+        /// <summary>
+        /// Maps metadata staging data to AAM DB model
+        /// </summary>
+        public async Task<List<AAMDataModel>> MapMetadataStagingDataToAAMDBModelAsync(List<MetadataStagingModel> metadataList, string tenantId)
+        {
+            var mappedData = new List<AAMDataModel>();
+
+            foreach (var metadata in metadataList)
+            {
+                var aamModel = new AAMDataModel
+                {
+                    Id = Guid.NewGuid().ToString(),
+                    TenantId = tenantId,
+                    MetadataSource = metadata.Source,
+                    TransformedData = metadata.MetadataContent,
+                    TransformationTimestamp = DateTime.UtcNow,
+                    Status = "MetadataMapped"
+                };
+
+                var result = await UpsertItemAsync(aamModel, tenantId);
+                mappedData.Add(result);
+            }
+
+            return mappedData;
+        }
+
+        /// <summary>
+        /// Upserts item into Cosmos DB container
+        /// </summary>
+        private async Task<T> UpsertItemAsync<T>(T item, string tenantId) where T : class
+        {
+            try
+            {
+                var response = await _container.UpsertItemAsync(item, new PartitionKey(tenantId));
+                LogDiagnostics($"Upsert successful: {response.Diagnostics}");
+                return response.Resource;
+            }
+            catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+            {
+                await Task.Delay(int.Parse(ex.RetryAfter?.TotalMilliseconds.ToString() ?? "1000"));
+                return await UpsertItemAsync(item, tenantId);
+            }
+            catch (Exception ex)
+            {
+                LogDiagnostics($"Error during upsert: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Logs diagnostic information for monitoring
+        /// </summary>
+        private void LogDiagnostics(string message)
+        {
+            Console.WriteLine($"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}] {message}");
+        }
+    }
+
+    // Supporting Models
+    public class StagingDataModel
+    {
+        public string Id { get; set; }
+        public string TenantId { get; set; }
+        public string Type { get; set; } = "StagingData";
+        public string Data { get; set; }
+        public DateTime CreatedTimestamp { get; set; }
+    }
+
+    public class MetadataStagingModel
+    {
+        public string Id { get; set; }
+        public string TenantId { get; set; }
+        public string Source { get; set; }
+        public string MetadataContent { get; set; }
+    }
+
+    public class AAMDataModel
+    {
+        public string Id { get; set; }
+        public string TenantId { get; set; }
+        public string Type { get; set; } = "AAMData";
+        public string StagingDataId { get; set; }
+        public string MetadataSource { get; set; }
+        public string TransformedData { get; set; }
+        public DateTime TransformationTimestamp { get; set; }
+        public string Status { get; set; }
+    }
+}
