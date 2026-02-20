@@ -10,9 +10,13 @@ var configuration = new ConfigurationBuilder()
 
 var services = new ServiceCollection();
 
-// Register DbContext
+// Register Staging DbContext
+services.AddDbContext<StagingDbContext>(options =>
+    options.UseSqlServer(configuration.GetConnectionString("StagingConnection")));
+
+// Register AAM DbContext
 services.AddDbContext<AAMDbContext>(options =>
-    options.UseSqlServer(configuration.GetConnectionString("DefaultConnection")));
+    options.UseSqlServer(configuration.GetConnectionString("AAMConnection")));
 
 // Register Service
 services.AddScoped<AAMDataMappingService>();
@@ -21,5 +25,6 @@ var serviceProvider = services.BuildServiceProvider();
 
 // Example usage
 var service = serviceProvider.GetRequiredService<AAMDataMappingService>();
-var result = await service.FetchNewDataAsync("tenant-123");
-Console.WriteLine($"Fetched {result.Count} staging records");
+var stagingData = await service.FetchNewDataAsync("tenant-123");
+var mappedData = await service.MapStagingDataToAAMDBModelAsync(stagingData, "tenant-123");
+Console.WriteLine($"Mapped {mappedData.Count} records to AAM DB");
