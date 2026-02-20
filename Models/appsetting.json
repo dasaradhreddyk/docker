@@ -1,1 +1,11 @@
-
+{
+  "ConnectionStrings": {
+    "StagingConnection": "Server=STAGING_SERVER;Database=StagingDB;User Id=sa;Password=YOUR_PASSWORD;",
+    "AAMConnection": "Server=AAM_SERVER;Database=AAMDB;User Id=sa;Password=YOUR_PASSWORD;"
+  },
+  "Logging": {
+    "LogLevel": {
+      "Default": "Information"
+    }
+  }
+}
